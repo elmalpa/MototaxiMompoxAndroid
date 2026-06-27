@@ -18,8 +18,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "export:android": "expo export --platform android",
-    "build:preview": "eas build --platform android --profile preview",
-    "build:production": "eas build --platform android --profile production"
+    "build:preview": "npx eas-cli build --platform android --profile preview",
+    "build:production": "npx eas-cli build --platform android --profile production"
   },
   "private": true
 }
