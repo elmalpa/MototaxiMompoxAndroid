@@ -1,48 +1,40 @@
-const { Server } = require('socket.io');
-
+﻿const { Server } = require('socket.io');
+const { authenticate } = require('./sessionService');
+const { sql, getPool } = require('./db');
 let io;
-
-const socketService = {
-  init: (httpServer) => {
-    io = new Server(httpServer, {
-      cors: {
-        origin: '*', // Ajustar en producción por seguridad
-      }
+module.exports = {
+  init(httpServer) {
+    io = new Server(httpServer, { cors: { origin: (process.env.CORS_ORIGINS || '').split(',').filter(Boolean) } });
+    io.use(async (socket, next) => {
+      try { socket.data.user = await authenticate(socket.handshake.auth?.token); next(); }
+      catch { next(new Error('Debes iniciar sesion')); }
     });
-
-    io.on('connection', (socket) => {
-      console.log(`[Socket] Nuevo cliente conectado: ${socket.id}`);
-
-      // Permitir que el usuario se una a una "sala" privada basada en su ID
-      socket.on('join', (userId) => {
-        socket.join(`user_${userId}`);
-        console.log(`[Socket] Usuario ${userId} se unió a su sala privada`);
+    io.on('connection', socket => {
+      const user = socket.data.user;
+      socket.join(`user_${user.id}`);
+      socket.on('set_availability', async () => {
+        try {
+          await authenticate(socket.handshake.auth?.token);
+          const pool = await getPool();
+          const result = await pool.request().input('id', sql.Int, user.id).query(
+            "SELECT user_id FROM DriverProfiles WHERE user_id = @id AND is_available = 1 AND approval_status = 'approved'",
+          );
+          if (user.role === 'conductor' && user.phone_verified && result.recordset.length) socket.join('available_drivers');
+          else socket.leave('available_drivers');
+        } catch { socket.disconnect(true); }
       });
-
-      // Gestionar la entrada/salida de la sala de conductores disponibles
-      socket.on('set_availability', (isAvailable) => {
-        if (isAvailable) {
-          socket.join('available_drivers');
-          console.log(`[Socket] Socket ${socket.id} unido a conductores disponibles`);
-        } else {
-          socket.leave('available_drivers');
-          console.log(`[Socket] Socket ${socket.id} salió de conductores disponibles`);
-        }
-      });
-
-      socket.on('disconnect', () => {
-        console.log('[Socket] Cliente desconectado');
-      });
+      const timer = setInterval(async () => {
+        try { await authenticate(socket.handshake.auth?.token); }
+        catch { socket.disconnect(true); }
+      }, 30000);
+      timer.unref();
+      socket.on('disconnect', () => clearInterval(timer));
     });
-
     return io;
   },
-  getIO: () => {
-    if (!io) {
-      throw new Error('Socket.io no ha sido inicializado');
-    }
+  disconnectUser(id) { io?.in(`user_${id}`).disconnectSockets(true); },
+  getIO() {
+    if (!io) throw new Error('Socket.io no ha sido inicializado');
     return io;
   },
 };
-
-module.exports = socketService;

@@ -17,7 +17,7 @@ function normalizePhone(value) {
 }
 
 function validatePassword(password) {
-  return typeof password === 'string' && password.length >= 8 && password.length <= 72;
+  return typeof password === 'string' && password.length >= 8 && Buffer.byteLength(password, 'utf8') <= 72;
 }
 
 function signToken(user) {
@@ -27,7 +27,7 @@ function signToken(user) {
   }
 
   return jwt.sign(
-    { id: user.id, name: user.name, phone: user.phone, role: user.role },
+    { id: user.id, sv: user.session_version ?? 0 },
     secret,
     { expiresIn: '7d' },
   );
@@ -59,6 +59,7 @@ router.post('/register', authRateLimit, async (req, res, next) => {
     if (role === 'conductor' && !normalizedPlate) {
       return res.status(400).json({ error: 'La placa de la moto es obligatoria para conductores' });
     }
+    if (normalizedPlate.length > 20) return res.status(400).json({ error: 'Placa invalida' });
 
     const existing = await authService.findUserByPhone(phone);
     if (existing) {
@@ -102,20 +103,28 @@ router.post('/login', authRateLimit, async (req, res, next) => {
       return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
 
-    const user = { id: found.id, name: found.name, phone: found.phone, role: found.role };
+    const user = { id: found.id, name: found.name, phone: found.phone, role: found.role, phone_verified: found.phone_verified };
 
     if (fcm_token) {
       await authService.updateFcmToken(user.id, fcm_token);
     }
 
-    return res.json({ user, token: signToken(user) });
+    return res.json({ user, token: signToken(found) });
   } catch (error) {
     return next(error);
   }
 });
 
 router.get('/me', authRequired, async (req, res) => {
-  res.json({ user: req.user });
+  const { session_version, ...user } = req.user;
+  res.json({ user });
+});
+
+router.post('/logout', authRequired, async (req, res, next) => {
+  try {
+    await authService.revokeSessions(req.user.id);
+    res.json({ updated: true });
+  } catch (error) { next(error); }
 });
 
 router.patch('/push-token', authRequired, async (req, res, next) => {
@@ -141,10 +150,11 @@ router.patch('/password', authRequired, authRateLimit, async (req, res, next) =>
 
     const found = await authService.findUserByPhone(req.user.phone);
     if (!found || !(await bcrypt.compare(currentPassword, found.password_hash))) {
-      return res.status(401).json({ error: 'La contrasena actual es incorrecta' });
+      return res.status(403).json({ error: 'La contrasena actual es incorrecta' });
     }
 
     await authService.updatePassword(req.user.id, await bcrypt.hash(newPassword, 10));
+    require('../socket').disconnectUser(req.user.id);
     return res.json({ updated: true });
   } catch (error) {
     return next(error);
@@ -154,6 +164,7 @@ router.patch('/password', authRequired, authRateLimit, async (req, res, next) =>
 router.delete('/account', authRequired, async (req, res, next) => {
   try {
     await authService.deleteOwnAccount(req.user.id);
+    require('../socket').disconnectUser(req.user.id);
     return res.json({ deleted: true });
   } catch (error) {
     return next(error);

@@ -43,3 +43,7 @@ npm run build:production
 ```
 
 No generes producción con una URL HTTP o privada.
+
+## Cambios del 15 de octubre de 2026
+
+La lista anterior es historica. El estado detallado y los bloqueos actuales estan en RELEASE_STATUS.md. La migracion SQL se aplico a la base configurada localmente. Falta confirmar el despliegue del codigo nuevo y configurar gateway SMS, Maps SDK y credenciales push. No marcar completadas pruebas reales ni publicacion por haber exportado el bundle. Responsable: Carlos Ribon; soporte: chamoribon@gmail.com.

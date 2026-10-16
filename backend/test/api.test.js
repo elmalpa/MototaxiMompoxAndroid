@@ -48,3 +48,13 @@ test('unknown routes return JSON 404', async () => {
   assert.equal(response.status, 404);
   assert.equal(body.error, 'Ruta no encontrada');
 });
+
+test('legal pages are served with the configured support contact', async () => {
+  for (const page of ['privacy-policy.html', 'account-deletion.html']) {
+    const response = await fetch(`${baseUrl}/legal/${page}`);
+    const html = await response.text();
+    assert.equal(response.status, 200);
+    assert.ok(html.includes('chamoribon@gmail.com'));
+    assert.equal(/\[(RESPONSABLE|CORREO|URL ELIMINACION)/.test(html), false);
+  }
+});

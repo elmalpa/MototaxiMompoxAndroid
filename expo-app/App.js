@@ -1,3 +1,5 @@
+import { apiRequest, apiCommand, onUnauthorized } from './api';
+import { Action, RecoveryPanel, SupportPanel, LocationPicker, DriverTracking, RideMap } from './OperationalFeatures';
 import { StatusBar } from 'expo-status-bar';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
@@ -5,6 +7,7 @@ import * as SecureStore from 'expo-secure-store';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   Alert,
   KeyboardAvoidingView,
   Linking,
@@ -80,89 +83,6 @@ function getDefaultApiBaseUrl() {
   return 'http://10.0.2.2:4000';
 }
 
-async function apiRequest(apiBaseUrl, path, { method = 'GET', token, body } = {}) {
-  if (!apiBaseUrl) {
-    throw new Error('La URL de produccion no esta configurada. Define EXPO_PUBLIC_API_URL con una direccion HTTPS.');
-  }
-
-  const headers = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
-  if (body) headers['Content-Type'] = 'application/json';
-
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  let text = '';
-  try {
-    text = await response.text();
-  } catch (error) {
-    throw new Error(`No se pudo leer respuesta del backend: ${error.message}`);
-  }
-
-  let data = null;
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch (error) {
-      data = {
-        raw: text,
-        parseError: error.message,
-      };
-    }
-  }
-
-  if (!response.ok) {
-    const fallback = data?.raw ? `${data.raw}` : `Error ${response.status}`;
-    throw new Error(data?.error || fallback);
-  }
-
-  if (data?.parseError) {
-    throw new Error(`Respuesta invalida del backend: ${data.raw || data.parseError}`);
-  }
-
-  return data;
-}
-
-async function apiCommand(apiBaseUrl, path, { method = 'PATCH', token, body } = {}) {
-  if (!apiBaseUrl) {
-    throw new Error('La URL de produccion no esta configurada. Define EXPO_PUBLIC_API_URL con una direccion HTTPS.');
-  }
-
-  const headers = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
-  if (body) headers['Content-Type'] = 'application/json';
-
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  if (response.ok) {
-    return true;
-  }
-
-  let message = `Error ${response.status}`;
-  try {
-    const text = await response.text();
-    if (text) {
-      try {
-        const data = JSON.parse(text);
-        message = data?.error || text;
-      } catch {
-        message = text;
-      }
-    }
-  } catch {
-    message = `Error ${response.status}`;
-  }
-
-  throw new Error(message);
-}
-
 export default function App() {
   const [apiBaseUrl] = useState(getDefaultApiBaseUrl);
   const [token, setToken] = useState(null);
@@ -179,15 +99,22 @@ export default function App() {
   });
   const [busy, setBusy] = useState(false);
   const [restoringSession, setRestoringSession] = useState(true);
+  const [restoreError, setRestoreError] = useState(false);
   const [passwordModalVisible, setPasswordModalVisible] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirmation: '' });
 
   useEffect(() => {
+    onUnauthorized(() => {
+      SecureStore.deleteItemAsync(SESSION_KEY).catch(() => {});
+      setUser(null); setToken(null);
+    });
     checkApi();
     restoreSession();
+    return () => onUnauthorized(null);
   }, []);
 
   async function restoreSession() {
+    setRestoringSession(true); setRestoreError(false);
     try {
       const stored = await SecureStore.getItemAsync(SESSION_KEY);
       if (!stored) return;
@@ -197,8 +124,9 @@ export default function App() {
       setToken(session.token);
       setUser(data.user);
       registerPushToken(session.token);
-    } catch {
-      await SecureStore.deleteItemAsync(SESSION_KEY);
+    } catch (error) {
+      if (error.status === 401 || error instanceof SyntaxError) await SecureStore.deleteItemAsync(SESSION_KEY);
+      else setRestoreError(true);
     } finally {
       setRestoringSession(false);
     }
@@ -268,6 +196,14 @@ export default function App() {
   }
 
   async function logout() {
+    try { await apiRequest(apiBaseUrl, '/api/auth/logout', { method: 'POST', token }); }
+    catch (error) {
+      if (error.status !== 401) { Alert.alert('Cerrar sesion', 'No se pudo cerrar la sesion en el servidor. Comprueba internet y vuelve a intentar.'); return; }
+    }
+    await clearLocalSession();
+  }
+
+  async function clearLocalSession() {
     await SecureStore.deleteItemAsync(SESSION_KEY);
     setUser(null);
     setToken(null);
@@ -295,7 +231,8 @@ export default function App() {
       });
       setPasswordModalVisible(false);
       setPasswordForm({ current: '', next: '', confirmation: '' });
-      Alert.alert('Clave actualizada', 'Tu contraseña fue cambiada correctamente.');
+      await clearLocalSession();
+      Alert.alert('Clave actualizada', 'Inicia sesion con tu nueva clave.');
     } catch (error) {
       Alert.alert('No se pudo cambiar', error.message);
     } finally {
@@ -324,7 +261,7 @@ export default function App() {
         method: 'DELETE',
         token,
       });
-      await logout();
+      await clearLocalSession();
       Alert.alert('Cuenta eliminada', 'Tu cuenta fue eliminada correctamente.');
     } catch (error) {
       Alert.alert('No se pudo eliminar la cuenta', error.message);
@@ -333,6 +270,9 @@ export default function App() {
 
   const header = (
     <AppHeader
+      apiBaseUrl={apiBaseUrl}
+      token={token}
+      onVerified={restoreSession}
       apiOk={apiOk}
       apiMessage={apiMessage}
       user={user}
@@ -353,6 +293,13 @@ export default function App() {
       </Shell>
     );
   }
+
+  if (restoreError) return (
+    <Shell><View style={styles.container}><Text style={styles.title}>Sin conexion</Text>
+      <Text style={styles.subtitle}>Tu sesion sigue guardada. Conectate para continuar.</Text>
+      <PrimaryButton label="Reintentar" onPress={restoreSession} />
+    </View></Shell>
+  );
 
   const passwordModal = (
     <PasswordModal
@@ -427,9 +374,9 @@ function Shell({ children }) {
   );
 }
 
-function AppHeader({ apiOk, apiMessage, user, onLogout, onDeleteAccount, onChangePassword, onCheckApi }) {
+function AppHeader({ apiBaseUrl, token, onVerified, apiOk, apiMessage, user, onLogout, onDeleteAccount, onChangePassword, onCheckApi }) {
   return (
-    <View style={styles.topBar}>
+    <View><View style={styles.topBar}>
       <View style={styles.topTitleWrap}>
         <Text style={styles.brand}>Mototaxi Mompox</Text>
         <View style={styles.statusLine}>
@@ -439,11 +386,16 @@ function AppHeader({ apiOk, apiMessage, user, onLogout, onDeleteAccount, onChang
         {user ? <Text style={styles.userLine}>{user.name} - {user.role}</Text> : null}
       </View>
       <View style={styles.headerActions}>
-        <IconButton label="API" onPress={onCheckApi} />
+        {__DEV__ ? <IconButton label="Conexion" onPress={onCheckApi} /> : null}
         {user ? <IconButton label="Clave" onPress={onChangePassword} /> : null}
         {user ? <IconButton label="Borrar" onPress={onDeleteAccount} /> : null}
         {user ? <IconButton label="Salir" onPress={onLogout} /> : null}
       </View>
+    </View>
+    {user && <View style={{ paddingHorizontal: 18 }}>
+      {!user.phone_verified && <RecoveryPanel apiBaseUrl={apiBaseUrl} token={token} onVerified={onVerified} />}
+      <SupportPanel apiBaseUrl={apiBaseUrl} token={token} />
+    </View>}
     </View>
   );
 }
@@ -508,6 +460,9 @@ function AuthScreen({ apiBaseUrl, authMode, busy, form, role, setAuthMode, setRo
         label={authMode === 'login' ? 'Entrar' : 'Crear cuenta'}
         onPress={submitAuth}
       />
+      <RecoveryPanel apiBaseUrl={apiBaseUrl} />
+      <Action label="Politica de privacidad" onPress={() => Linking.openURL(`${apiBaseUrl}/legal/privacy-policy.html`).catch(() => Alert.alert('Privacidad', 'No se pudo abrir el enlace.'))} />
+      <Text style={styles.footer}>Soporte: chamoribon@gmail.com</Text>
       {__DEV__ ? <Text style={styles.footer}>Backend: {apiBaseUrl || 'sin configurar'}</Text> : null}
     </ScrollView>
   );
@@ -518,21 +473,26 @@ function ClientScreen({ apiBaseUrl, token }) {
     pickup_address: '',
     destination_address: '',
     offered_price: '3000',
+    pickup_point: null,
+    destination_point: null,
   });
   const [rides, setRides] = useState([]);
   const [ratingForms, setRatingForms] = useState({});
   const [busy, setBusy] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [syncError, setSyncError] = useState(null);
   const alertedOfferIdsRef = useRef(new Set());
 
   useEffect(() => {
-    loadRides();
-    const intervalId = setInterval(() => {
-      loadRides({ silent: true });
-    }, 5000);
-
-    return () => clearInterval(intervalId);
+    let stopped = false;
+    let timer;
+    async function poll() {
+      if (AppState.currentState === 'active') await loadRides({ silent: true });
+      if (!stopped) timer = setTimeout(poll, 5000);
+    }
+    poll();
+    return () => { stopped = true; clearTimeout(timer); };
   }, []);
 
   function updateRideField(key, value) {
@@ -547,6 +507,7 @@ function ClientScreen({ apiBaseUrl, token }) {
         ride.status === 'ofertado' && !alertedOfferIdsRef.current.has(ride.id)
       ));
 
+      setSyncError(null);
       setRides(nextRides);
 
       if (newOffer) {
@@ -559,6 +520,7 @@ function ClientScreen({ apiBaseUrl, token }) {
         );
       }
     } catch (error) {
+      setSyncError(error.message);
       if (!silent) Alert.alert('Mis viajes', error.message);
     } finally {
       if (!silent) setRefreshing(false);
@@ -585,6 +547,10 @@ function ClientScreen({ apiBaseUrl, token }) {
           pickup_address: rideForm.pickup_address.trim(),
           destination_address: rideForm.destination_address.trim(),
           offered_price: offeredPrice,
+          pickup_lat: rideForm.pickup_point?.latitude,
+          pickup_lng: rideForm.pickup_point?.longitude,
+          destination_lat: rideForm.destination_point?.latitude,
+          destination_lng: rideForm.destination_point?.longitude,
         },
       });
       Alert.alert('Servicio creado', 'Tu solicitud fue enviada a los conductores.');
@@ -592,6 +558,8 @@ function ClientScreen({ apiBaseUrl, token }) {
         pickup_address: '',
         destination_address: '',
         offered_price: '3000',
+        pickup_point: null,
+        destination_point: null,
       });
       await loadRides({ silent: true });
     } catch (error) {
@@ -615,7 +583,7 @@ function ClientScreen({ apiBaseUrl, token }) {
           : ride
       )));
     } catch (error) {
-      Alert.alert('Aceptar oferta v2', `${error.message}\n\n${apiBaseUrl}/api/rides/${rideId}/client-accept`);
+      Alert.alert('Aceptar oferta', error.message);
     } finally {
       setBusyId(null);
     }
@@ -706,7 +674,7 @@ function ClientScreen({ apiBaseUrl, token }) {
   }
 
   function renderRideFooter(ride) {
-    const canCancel = ['ofertado', 'aceptado', 'en_camino'].includes(ride.status);
+    const canCancel = ['solicitado', 'ofertado', 'aceptado', 'en_camino'].includes(ride.status);
     const canRate = ride.status === 'finalizado' && !ride.driver_service_rating;
 
     if (!canCancel && !canRate) return null;
@@ -717,7 +685,7 @@ function ClientScreen({ apiBaseUrl, token }) {
       <View style={styles.actionsColumn}>
         {ride.status === 'ofertado' ? (
           <>
-            <PrimaryButton
+      <PrimaryButton
               busy={busyId === `client-accept-${ride.id}`}
               label="Aceptar precio"
               onPress={() => acceptDriverOffer(ride.id)}
@@ -729,7 +697,7 @@ function ClientScreen({ apiBaseUrl, token }) {
             />
           </>
         ) : null}
-        {['aceptado', 'en_camino'].includes(ride.status) ? (
+        {['solicitado', 'aceptado', 'en_camino'].includes(ride.status) ? (
           <DangerButton
             busy={busyId === `client-cancel-${ride.id}`}
             label="Cancelar servicio"
@@ -773,13 +741,16 @@ function ClientScreen({ apiBaseUrl, token }) {
     >
       <Text style={styles.title}>Cliente</Text>
       <Text style={styles.subtitle}>Solicita un mototaxi y mira el estado de tus viajes.</Text>
+      {syncError && <Text accessibilityLiveRegion="polite" style={{ color: '#B42318', marginBottom: 12 }}>No se pudo actualizar: {syncError}. Desliza hacia abajo para reintentar.</Text>}
 
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>Nuevo servicio</Text>
         <Field label="Donde te recogen" value={rideForm.pickup_address} onChangeText={value => updateRideField('pickup_address', value)} />
         <Field label="Para donde vas" value={rideForm.destination_address} onChangeText={value => updateRideField('destination_address', value)} />
         <Field label="Tu oferta desde $3000" keyboardType="numeric" value={rideForm.offered_price} onChangeText={value => updateRideField('offered_price', value)} />
-        <PrimaryButton busy={busy} label="Solicitar mototaxi" onPress={createRide} />
+        <LocationPicker label={rideForm.pickup_point ? 'Cambiar punto de recogida' : 'Elegir recogida en el mapa'} onSelect={point => updateRideField('pickup_point', point)} />
+      <LocationPicker label={rideForm.destination_point ? 'Cambiar punto de destino' : 'Elegir destino en el mapa'} onSelect={point => updateRideField('destination_point', point)} />
+      <PrimaryButton busy={busy} label="Solicitar mototaxi" onPress={createRide} />
       </View>
 
       <ListSection
@@ -789,6 +760,8 @@ function ClientScreen({ apiBaseUrl, token }) {
           <RideCard
             key={ride.id}
             ride={ride}
+            apiBaseUrl={apiBaseUrl}
+            token={token}
             footer={renderRideFooter(ride)}
           />
         )}
@@ -805,26 +778,36 @@ function DriverScreen({ apiBaseUrl, token }) {
   const [offerPrices, setOfferPrices] = useState({});
   const [busyId, setBusyId] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [syncError, setSyncError] = useState(null);
 
   useEffect(() => {
-    loadAll();
+    let stopped = false;
+    let timer;
+    async function poll() {
+      if (AppState.currentState === 'active') await loadAll({ silent: true });
+      if (!stopped) timer = setTimeout(poll, 5000);
+    }
+    poll();
+    return () => { stopped = true; clearTimeout(timer); };
   }, []);
 
-  async function loadAll() {
-    setRefreshing(true);
+  async function loadAll({ silent = false } = {}) {
+    if (!silent) setRefreshing(true);
     try {
       const [profileData, availableData, myData] = await Promise.all([
         apiRequest(apiBaseUrl, '/api/drivers/me', { token }),
         apiRequest(apiBaseUrl, '/api/rides/available', { token }),
         apiRequest(apiBaseUrl, '/api/rides/my', { token }),
       ]);
+      setSyncError(null);
       setProfile(profileData);
       setAvailable(availableData);
       setMyRides(myData);
     } catch (error) {
-      Alert.alert('Conductor', error.message);
+      setSyncError(error.message);
+      if (!silent) Alert.alert('Conductor', error.message);
     } finally {
-      setRefreshing(false);
+      if (!silent) setRefreshing(false);
     }
   }
 
@@ -881,7 +864,7 @@ function DriverScreen({ apiBaseUrl, token }) {
       return;
     }
 
-    const offeredPrice = Number(offerPrices[rideId]);
+    const offeredPrice = Number(offerPrices[rideId] ?? Math.max(3000, Number(available.find(ride => ride.id === rideId)?.estimated_price || 3000)));
     if (!Number.isFinite(offeredPrice) || offeredPrice < 3000) {
       Alert.alert('Contraoferta', 'El precio debe ser de 3000 pesos en adelante.');
       return;
@@ -927,9 +910,12 @@ function DriverScreen({ apiBaseUrl, token }) {
     >
       <Text style={styles.title}>Conductor</Text>
       <Text style={styles.subtitle}>Acepta servicios y actualiza tu disponibilidad.</Text>
+      {syncError && <Text accessibilityLiveRegion="polite" style={{ color: '#B42318', marginBottom: 12 }}>No se pudo actualizar: {syncError}. Desliza hacia abajo para reintentar.</Text>}
 
+      <DriverTracking apiBaseUrl={apiBaseUrl} token={token} rideId={myRides.find(ride => ['aceptado', 'en_camino'].includes(ride.status))?.id} />
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>{profile?.name || 'Perfil'}</Text>
+        <Text style={styles.detail}>Aprobacion: {profile?.approval_status || 'pending'}. Telefono: {profile?.phone_verified ? 'verificado' : 'sin verificar'}.</Text>
         <PrimaryButton
           busy={busyId === 'availability'}
           label={isAvailable ? 'Pausar disponibilidad' : 'Activar disponibilidad'}
@@ -944,6 +930,8 @@ function DriverScreen({ apiBaseUrl, token }) {
           <RideCard
             key={ride.id}
             ride={ride}
+            apiBaseUrl={apiBaseUrl}
+            token={token}
             viewerRole="conductor"
             footer={(
               <View style={styles.actionsColumn}>
@@ -973,6 +961,8 @@ function DriverScreen({ apiBaseUrl, token }) {
           <RideCard
             key={ride.id}
             ride={ride}
+            apiBaseUrl={apiBaseUrl}
+            token={token}
             viewerRole="conductor"
             footer={(
               <View style={styles.actionsColumn}>
@@ -1008,6 +998,7 @@ function AdminScreen({ apiBaseUrl, token }) {
   const [drivers, setDrivers] = useState([]);
   const [rides, setRides] = useState([]);
   const [tables, setTables] = useState([]);
+  const [reports, setReports] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const badRatingAlertedRef = useRef(false);
@@ -1019,18 +1010,20 @@ function AdminScreen({ apiBaseUrl, token }) {
   async function loadAll() {
     setRefreshing(true);
     try {
-      const [summaryData, usersData, driversData, ridesData, tablesData] = await Promise.all([
+      const [summaryData, usersData, driversData, ridesData, tablesData, reportsData] = await Promise.all([
         apiRequest(apiBaseUrl, '/api/admin/summary', { token }),
         apiRequest(apiBaseUrl, '/api/admin/users', { token }),
         apiRequest(apiBaseUrl, '/api/admin/drivers', { token }),
         apiRequest(apiBaseUrl, '/api/admin/rides', { token }),
         apiRequest(apiBaseUrl, '/api/admin/tables', { token }),
+        apiRequest(apiBaseUrl, '/api/operations/reports', { token }),
       ]);
       setSummary(summaryData);
       setUsers(usersData);
       setDrivers(driversData);
       setRides(ridesData);
       setTables(tablesData);
+      setReports(reportsData);
 
       const badRatedRides = ridesData.filter(ride => ride.driver_service_rating === 'malo');
       if (badRatedRides.length > 0 && !badRatingAlertedRef.current) {
@@ -1045,6 +1038,27 @@ function AdminScreen({ apiBaseUrl, token }) {
     } finally {
       setRefreshing(false);
     }
+  }
+
+  async function approveDriver(item, status) {
+    Alert.alert('Revision del conductor', status === 'approved' ? 'Confirma que verificaste identidad, documentos y vehiculo antes de aprobar.' : 'El conductor dejara de poder aceptar nuevas carreras.', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Confirmar', onPress: async () => {
+        setDeletingId(item.id);
+        try {
+          await apiCommand(apiBaseUrl, `/api/admin/drivers/${item.id}/approval`, { token, body: { status } });
+          await loadAll();
+        } catch (error) { Alert.alert('Conductor', error.message); }
+        finally { setDeletingId(null); }
+      } },
+    ]);
+  }
+
+  async function resolveReport(item) {
+    try {
+      await apiCommand(apiBaseUrl, `/api/operations/reports/${item.id}`, { token, body: { status: 'resolved' } });
+      await loadAll();
+    } catch (error) { Alert.alert('Reportes', error.message); }
   }
 
   function confirmDeleteUser(item) {
@@ -1123,7 +1137,8 @@ function AdminScreen({ apiBaseUrl, token }) {
   const content = useMemo(() => {
     if (tab === 'summary') return <SummaryGrid summary={summary} onSelect={handleSummarySelect} />;
     if (tab === 'users') return <AdminList deletingId={deletingId} items={filteredUsers} empty="Sin usuarios" onDelete={confirmDeleteUser} title={userTitle} />;
-    if (tab === 'drivers') return <AdminList deletingId={deletingId} items={drivers} empty="Sin conductores" onDelete={confirmDeleteUser} title="Conductores" />;
+    if (tab === 'drivers') return <AdminList onApprove={approveDriver} deletingId={deletingId} items={drivers} empty="Sin conductores" onDelete={confirmDeleteUser} title="Conductores" />;
+    if (tab === 'reports') return <AdminList items={reports} empty="Sin reportes" title="Reportes" onResolve={resolveReport} />;
     if (tab === 'rides') {
       return (
         <AdminRidesList
@@ -1138,7 +1153,7 @@ function AdminScreen({ apiBaseUrl, token }) {
       );
     }
     return <AdminList items={tables} empty="Sin tablas" title="Tablas" />;
-  }, [tab, summary, filteredUsers, drivers, filteredRides, tables, deletingId, userTitle, rideTitle, ridePhoneQuery, rideStatusFilter]);
+  }, [tab, summary, filteredUsers, drivers, filteredRides, tables, reports, deletingId, userTitle, rideTitle, ridePhoneQuery, rideStatusFilter]);
 
   return (
     <ScrollView
@@ -1146,7 +1161,7 @@ function AdminScreen({ apiBaseUrl, token }) {
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadAll} />}
     >
       <Text style={styles.title}>Administrador</Text>
-      <Text style={styles.subtitle}>Vista general de la base de datos.</Text>
+      <Text style={styles.subtitle}>Gestiona conductores, viajes y reportes de soporte.</Text>
       <SegmentedControl
         value={tab}
         options={[
@@ -1154,7 +1169,8 @@ function AdminScreen({ apiBaseUrl, token }) {
           { value: 'users', label: 'Usuarios' },
           { value: 'drivers', label: 'Conductores' },
           { value: 'rides', label: 'Viajes' },
-          { value: 'tables', label: 'Tablas' },
+          { value: 'reports', label: 'Reportes' },
+          ...(__DEV__ ? [{ value: 'tables', label: 'Tablas' }] : []),
         ]}
         onChange={nextTab => {
           if (nextTab === 'users') setUserRoleFilter('cliente');
@@ -1274,7 +1290,7 @@ function AdminRidesList({ empty, items, onPhoneQueryChange, onStatusFilterChange
   );
 }
 
-function AdminList({ deletingId, empty, items, onDelete, title }) {
+function AdminList({ deletingId, empty, items, onDelete, onApprove, onResolve, title }) {
   return (
     <View style={styles.card}>
       <Text style={styles.sectionTitle}>{title}</Text>
@@ -1286,6 +1302,11 @@ function AdminList({ deletingId, empty, items, onDelete, title }) {
               <Text style={styles.dbKey}>{key}: </Text>{formatValue(value)}
             </Text>
           ))}
+          {onApprove && <>
+            <Action label="Aprobar conductor" disabled={deletingId === item.id} onPress={() => onApprove(item, 'approved')} />
+            <Action label="Suspender conductor" disabled={deletingId === item.id} onPress={() => onApprove(item, 'rejected')} />
+          </>}
+          {onResolve && item.status === 'open' && <Action label="Marcar resuelto" onPress={() => onResolve(item)} />}
           {onDelete ? (
             <View style={styles.dbActions}>
               <DangerButton
@@ -1311,7 +1332,7 @@ function ListSection({ empty, items, renderItem, title }) {
   );
 }
 
-function RideCard({ footer, ride, viewerRole = 'cliente' }) {
+function RideCard({ footer, ride, apiBaseUrl, token, viewerRole = 'cliente' }) {
   const clientPrice = Number(ride.estimated_price || 0);
   const driverOfferPrice = Number(ride.driver_offer_price || 0);
   const displayPrice = ride.status === 'ofertado' && driverOfferPrice > 0 ? driverOfferPrice : clientPrice;
@@ -1342,6 +1363,18 @@ function RideCard({ footer, ride, viewerRole = 'cliente' }) {
           {ride.driver_service_comment ? ` - ${ride.driver_service_comment}` : ''}
         </Text>
       ) : null}
+      {isDriverView && ['aceptado', 'en_camino'].includes(ride.status) && (
+        <View style={styles.actionsColumn}>
+          <SecondaryActionButton label="Navegar a recogida" onPress={() => {
+            const destination = ride.pickup_lat != null && ride.pickup_lng != null ? `${ride.pickup_lat},${ride.pickup_lng}` : `${ride.pickup_address}, Mompox, Colombia`;
+            Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}`).catch(() => Alert.alert('Mapa', 'No se pudo abrir la navegacion.'));
+          }} />
+          <SecondaryActionButton label="Navegar a destino" onPress={() => {
+            const destination = ride.destination_lat != null && ride.destination_lng != null ? `${ride.destination_lat},${ride.destination_lng}` : `${ride.destination_address}, Mompox, Colombia`;
+            Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}`).catch(() => Alert.alert('Mapa', 'No se pudo abrir la navegacion.'));
+          }} />
+        </View>
+      )}
       {canDriverCallClient ? (
         <View style={styles.driverPanel}>
           <View style={styles.driverPanelHeader}>
@@ -1389,6 +1422,7 @@ function RideCard({ footer, ride, viewerRole = 'cliente' }) {
           ) : null}
         </View>
       ) : null}
+      {!isDriverView && ['aceptado', 'en_camino'].includes(ride.status) && <RideMap apiBaseUrl={apiBaseUrl} token={token} ride={ride} />}
       {footer ? <View style={styles.cardFooter}>{footer}</View> : null}
     </View>
   );
@@ -1537,6 +1571,8 @@ const styles = StyleSheet.create({
   },
   headerActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    maxWidth: 140,
     gap: 8,
   },
   iconButton: {

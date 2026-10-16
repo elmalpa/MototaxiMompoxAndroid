@@ -19,7 +19,9 @@ router.get('/me', authRequired, requireRole('conductor'), async (req, res, next)
 router.patch('/availability', authRequired, requireRole('conductor'), async (req, res, next) => {
   try {
     const { is_available } = req.body;
+    if (typeof is_available !== 'boolean') return res.status(400).json({ error: 'Disponibilidad invalida' });
     const updated = await driverService.updateAvailability(req.user.id, is_available);
+    if (!updated) return res.status(403).json({ error: 'Verifica tu telefono y espera la aprobacion del administrador.' });
     res.json(updated);
   } catch (error) {
     next(error);

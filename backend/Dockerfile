@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:24-alpine
 
 ENV NODE_ENV=production
 WORKDIR /app
@@ -12,4 +12,4 @@ EXPOSE 4000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||4000)+'/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
-CMD ["node", "server.js"]
+CMD ["sh", "-c", "node scripts/migrate.js && exec node server.js"]

@@ -1,6 +1,6 @@
-const jwt = require('jsonwebtoken');
+const { authenticate } = require('../sessionService');
 
-function authRequired(req, res, next) {
+async function authRequired(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
 
@@ -13,9 +13,12 @@ function authRequired(req, res, next) {
     if (!secret) {
       return res.status(503).json({ error: 'El servidor no tiene configurada la autenticacion' });
     }
-    req.user = jwt.verify(token, secret);
+    req.user = await authenticate(token);
     return next();
   } catch (error) {
+    if (!['JsonWebTokenError', 'TokenExpiredError', 'NotBeforeError'].includes(error.name) && error.status !== 401) {
+      return next(error);
+    }
     return res.status(401).json({ error: 'Sesión inválida o vencida' });
   }
 }

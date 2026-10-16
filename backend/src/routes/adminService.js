@@ -56,7 +56,7 @@ const adminService = {
   async getDrivers() {
     return query(`
       SELECT u.id, u.name, u.phone, u.created_at,
-             dp.vehicle_plate, dp.is_available, dp.rating
+             dp.vehicle_plate, dp.is_available, dp.rating, dp.approval_status, u.phone_verified
       FROM Users u
       INNER JOIN DriverProfiles dp ON dp.user_id = u.id
       ORDER BY dp.is_available DESC, u.name ASC
@@ -105,6 +105,14 @@ const adminService = {
 
     try {
       await transaction.begin();
+      const active = await transaction.request().input('id', sql.Int, userId).query(`
+        SELECT TOP 1 id FROM RideRequests WITH (UPDLOCK, HOLDLOCK)
+        WHERE (client_id = @id OR driver_id = @id) AND status IN ('solicitado','ofertado','aceptado','en_camino')
+      `);
+      if (active.recordset.length) {
+        throw Object.assign(new Error('Finaliza o cancela los viajes activos antes de eliminar la cuenta.'), { status: 409 });
+      }
+
 
       const userResult = await transaction.request()
         .input('id', sql.Int, userId)
@@ -141,6 +149,7 @@ const adminService = {
           DELETE FROM DriverProfiles
           WHERE user_id = @id;
 
+          DELETE FROM PushReceipts WHERE token IN (SELECT fcm_token FROM Users WHERE id = @id);
           DELETE FROM Users
           WHERE id = @id;
         `);

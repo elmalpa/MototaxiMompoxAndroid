@@ -4,7 +4,7 @@ services:
     runtime: docker
     rootDir: backend
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /api/health
+    healthCheckPath: /api/ready
     envVars:
       - key: NODE_ENV
         value: production
@@ -27,4 +27,16 @@ services:
       - key: DB_TRUST_CERT
         value: "false"
       - key: CORS_ORIGINS
+        sync: false
+      - key: SMS_PROVIDER
+        value: smsgate
+      - key: SMSGATE_URL
+        value: https://api.sms-gate.app/3rdparty/v1
+      - key: SMSGATE_USERNAME
+        sync: false
+      - key: SMSGATE_PASSWORD
+        sync: false
+      - key: SMSGATE_DEVICE_ID
+        sync: false
+      - key: SMSGATE_SIM_NUMBER
         sync: false

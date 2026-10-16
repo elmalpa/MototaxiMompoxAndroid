@@ -9,7 +9,7 @@ La aplicacion principal para continuar y publicar es `expo-app/`. La carpeta
 
 Requisitos:
 
-- Node.js 20 o superior
+- Node.js 24 LTS
 - SQL Server disponible
 - Base de datos `MototaxiMompox`
 
@@ -27,6 +27,13 @@ Crear tablas iniciales:
 
 ```powershell
 sqlcmd -S 127.0.0.1,1433 -U sa -P "<password>" -i database/schema.sql
+```
+
+Aplicar la migracion de seguridad despues de crear el esquema:
+
+```powershell
+cd backend
+npm run migrate
 ```
 
 Arrancar API:
@@ -74,7 +81,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 La app nativa usa una direccion local y se conserva solamente como prototipo.
 
-Nota: la app Android reconstruida es una base funcional; las pantallas completas de cliente/conductor todavia deben implementarse contra las rutas del backend.
+La app principal Expo ya incluye pantallas cliente/conductor/administrador. No distribuir el APK nativo de esta carpeta como si fuera la app completa.
 
 ## Expo Go
 
@@ -98,3 +105,7 @@ npm start
 
 Escanea el QR con Expo Go. Para produccion, `EXPO_PUBLIC_API_URL` debe ser una
 URL HTTPS publica configurada en EAS. Consulta `PLAY_STORE_CHECKLIST.md`.
+
+## Estado actual
+
+Consulta [RELEASE_STATUS.md](RELEASE_STATUS.md) para funciones implementadas, validacion, migracion y dependencias externas. El telefono debe verificarse por SMS para solicitar/aceptar carreras; sin configurar el gateway SMS, esas acciones permanecen bloqueadas. Soporte: Carlos Ribon, chamoribon@gmail.com.

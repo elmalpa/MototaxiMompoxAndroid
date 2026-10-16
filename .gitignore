@@ -18,6 +18,8 @@ expo-app/.env.*
 local.properties
 backend/.env
 backend/serviceAccountKey.json
+**/google-services.json
+**/*service-account*.json
 backend/npm-debug.log*
 *.log
 *.err.log

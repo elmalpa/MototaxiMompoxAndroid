@@ -12,7 +12,7 @@ compararse con la infraestructura y proveedores definitivos antes de enviarlo.
 | Contraseña | Autenticación; se almacena como hash | Sí | No |
 | Placa del vehículo | Identificación del conductor | Para conductor | Con el cliente asignado |
 | Origen y destino | Prestación del servicio | Sí para solicitar viaje | Con conductores autorizados |
-| Coordenadas del viaje | Prestación del servicio, si se habilitan | No actualmente | Con participantes autorizados |
+| Coordenadas del viaje | Prestación del servicio, si se habilitan | No, con consentimiento | Con participantes autorizados |
 | Historial y estado de viajes | Operación, soporte y seguridad | Sí | Con administradores autorizados |
 | Precio y contraoferta | Operación del servicio | Sí | Con participantes del viaje |
 | Calificación y comentario | Calidad y soporte | No | Con administradores autorizados |
@@ -30,3 +30,5 @@ compararse con la infraestructura y proveedores definitivos antes de enviarlo.
 - No declarar ubicación precisa como recopilada hasta confirmar si se habilitará GPS.
 - Confirmar las prácticas de Render, proveedor SQL, Expo y Firebase.
 - La política publicada debe coincidir exactamente con este formulario.
+
+- Se recopilan reportes de soporte y codigos de verificacion de telefono (almacenados como HMAC). Revisar los proveedores de mapas y SMS antes de enviar el formulario.

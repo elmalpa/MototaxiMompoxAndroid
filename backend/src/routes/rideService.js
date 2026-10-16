@@ -1,3 +1,4 @@
+const { withDriverLock } = require('../driverAssignment');
 const { sql, getPool } = require('../db');
 const socketService = require('../socket');
 const notificationService = require('../notificationService');
@@ -128,10 +129,14 @@ const rideService = {
     const result = await pool.request()
       .input('driver_id', sql.Int, driverId)
       .query(`
-      SELECT r.*, u.name AS client_name, u.phone AS client_phone
+      SELECT r.*, u.name AS client_name
       FROM RideRequests r
       INNER JOIN Users u ON u.id = r.client_id
       WHERE r.status = 'solicitado'
+        AND EXISTS (
+          SELECT 1 FROM DriverProfiles dp INNER JOIN Users du ON du.id = dp.user_id
+          WHERE dp.user_id = @driver_id AND dp.approval_status = 'approved' AND dp.is_available = 1 AND du.phone_verified = 1
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM RideRejectedDrivers rrd
@@ -172,10 +177,11 @@ const rideService = {
    */
   async acceptRide(rideId, driverId) {
     const pool = await getPool();
-    const activeRide = await getActiveDriverRide(pool, driverId);
+    const result = await withDriverLock(driverId, async lockedPool => {
+    const activeRide = await getActiveDriverRide(lockedPool, driverId);
     assertDriverCanTakeRide(activeRide);
 
-    const result = await pool.request()
+    return lockedPool.request()
       .input('ride_id', sql.Int, rideId)
       .input('driver_id', sql.Int, driverId)
       .query(`
@@ -183,8 +189,10 @@ const rideService = {
         SET driver_id = @driver_id, status = 'aceptado', accepted_at = SYSUTCDATETIME()
         OUTPUT INSERTED.*
         WHERE id = @ride_id AND status = 'solicitado'
+          AND NOT EXISTS (SELECT 1 FROM RideRejectedDrivers WHERE ride_id = @ride_id AND driver_id = @driver_id)
       `);
     
+    });
     const changedRide = result.recordset[0];
     const ride = changedRide ? await hydrateRide(pool, changedRide.id) : null;
     if (ride) {
@@ -199,10 +207,11 @@ const rideService = {
    */
   async offerRidePrice(rideId, driverId, offeredPrice) {
     const pool = await getPool();
-    const activeRide = await getActiveDriverRide(pool, driverId);
+    const result = await withDriverLock(driverId, async lockedPool => {
+    const activeRide = await getActiveDriverRide(lockedPool, driverId);
     assertDriverCanTakeRide(activeRide);
 
-    const result = await pool.request()
+    return lockedPool.request()
       .input('ride_id', sql.Int, rideId)
       .input('driver_id', sql.Int, driverId)
       .input('driver_offer_price', sql.Decimal(10, 2), offeredPrice)
@@ -213,8 +222,10 @@ const rideService = {
             status = 'ofertado'
         OUTPUT INSERTED.*
         WHERE id = @ride_id AND status = 'solicitado'
+          AND NOT EXISTS (SELECT 1 FROM RideRejectedDrivers WHERE ride_id = @ride_id AND driver_id = @driver_id)
       `);
 
+    });
     const changedRide = result.recordset[0];
     const ride = changedRide ? await hydrateRide(pool, changedRide.id) : null;
     if (ride) {
@@ -249,6 +260,7 @@ const rideService = {
           AND status = 'ofertado'
           AND driver_id IS NOT NULL
           AND driver_offer_price IS NOT NULL
+          AND EXISTS (SELECT 1 FROM DriverProfiles dp WHERE dp.user_id = driver_id AND dp.approval_status = 'approved')
       `);
 
     const changedRide = result.recordset[0];
@@ -279,7 +291,7 @@ const rideService = {
         .input('client_id', sql.Int, clientId)
         .query(`
           SELECT id, driver_id
-          FROM RideRequests
+          FROM RideRequests WITH (UPDLOCK, HOLDLOCK)
           WHERE id = @ride_id
             AND client_id = @client_id
             AND status = 'ofertado'
@@ -389,6 +401,9 @@ const rideService = {
       const io = socketService.getIO();
       io.to(`user_${ride.client_id}`).emit('status_update', ride);
       if (ride.driver_id) io.to(`user_${ride.driver_id}`).emit('status_update', ride);
+      const titles = { cancelado: 'Viaje cancelado', finalizado: 'Viaje finalizado', en_camino: 'Conductor en camino' };
+      const recipient = userId === ride.client_id ? ride.driver_id : ride.client_id;
+      if (recipient) notificationService.sendToUser(recipient, titles[ride.status], 'Abre la app para ver el estado del viaje.', { rideId: ride.id });
     }
     return ride;
   },
@@ -430,9 +445,18 @@ const rideService = {
           AND client_id = @client_id
           AND status = 'finalizado'
           AND driver_id IS NOT NULL
+          AND driver_service_rating IS NULL
       `);
 
     const changedRide = result.recordset[0];
+    if (changedRide) {
+      await pool.request().input('driver_id', sql.Int, changedRide.driver_id).query(`
+        UPDATE DriverProfiles SET rating = (
+          SELECT AVG(CAST(CASE driver_service_rating WHEN 'bueno' THEN 5 WHEN 'regular' THEN 3 ELSE 1 END AS DECIMAL(3,2)))
+          FROM RideRequests WHERE driver_id = @driver_id AND driver_service_rating IS NOT NULL
+        ) WHERE user_id = @driver_id
+      `);
+    }
     return changedRide ? await hydrateRide(pool, changedRide.id) : null;
   }
 };

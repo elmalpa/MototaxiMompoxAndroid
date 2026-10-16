@@ -32,11 +32,25 @@ router.post('/', authRequired, requireRole('cliente'), async (req, res, next) =>
       offered_price: normalizeNullableNumber(offered_price),
     };
 
+    if (!req.user.phone_verified) return res.status(403).json({ error: 'Verifica tu telefono antes de solicitar un viaje.' });
+    for (const key of ['pickup_address', 'destination_address']) {
+      if (typeof clean[key] !== 'string' || !clean[key].trim() || clean[key].length > 255) {
+        return res.status(400).json({ error: 'Las direcciones deben tener entre 1 y 255 caracteres.' });
+      }
+      clean[key] = clean[key].trim();
+    }
+    for (const prefix of ['pickup', 'destination']) {
+      const lat = clean[`${prefix}_lat`], lng = clean[`${prefix}_lng`];
+      if ((lat === null) !== (lng === null) || (lat !== null && (Math.abs(lat) > 90 || Math.abs(lng) > 180))) {
+        return res.status(400).json({ error: 'Coordenadas invalidas' });
+      }
+    }
+
     if (!clean.pickup_address || !clean.destination_address) {
       return res.status(400).json({ error: 'Debes indicar punto de recogida y destino' });
     }
 
-    if (clean.offered_price === null || clean.offered_price < 3000) {
+    if (clean.offered_price === null || clean.offered_price < 3000 || clean.offered_price > 99999999) {
       return res.status(400).json({ error: 'El precio debe ser de 3000 pesos en adelante' });
     }
 
@@ -68,8 +82,8 @@ router.get('/my', authRequired, async (req, res, next) => {
 
 router.patch('/:id/accept', authRequired, requireRole('conductor'), async (req, res, next) => {
   try {
-    const rideId = parseInt(req.params.id);
-    if (Number.isNaN(rideId)) return res.status(400).json({ error: 'ID de servicio invalido' });
+    const rideId = Number(req.params.id);
+    if (!Number.isInteger(rideId) || rideId < 1) return res.status(400).json({ error: 'ID de servicio invalido' });
 
     const ride = await rideService.acceptRide(rideId, req.user.id);
 
@@ -85,11 +99,11 @@ router.patch('/:id/accept', authRequired, requireRole('conductor'), async (req, 
 
 router.patch('/:id/offer', authRequired, requireRole('conductor'), async (req, res, next) => {
   try {
-    const rideId = parseInt(req.params.id);
-    if (Number.isNaN(rideId)) return res.status(400).json({ error: 'ID de servicio invalido' });
+    const rideId = Number(req.params.id);
+    if (!Number.isInteger(rideId) || rideId < 1) return res.status(400).json({ error: 'ID de servicio invalido' });
 
     const offeredPrice = normalizeNullableNumber(req.body.offered_price);
-    if (offeredPrice === null || offeredPrice < 3000) {
+    if (offeredPrice === null || offeredPrice < 3000 || offeredPrice > 99999999) {
       return res.status(400).json({ error: 'La contraoferta debe ser de 3000 pesos en adelante' });
     }
 
@@ -107,8 +121,8 @@ router.patch('/:id/offer', authRequired, requireRole('conductor'), async (req, r
 
 router.patch('/:id/client-accept', authRequired, requireRole('cliente'), async (req, res, next) => {
   try {
-    const rideId = parseInt(req.params.id);
-    if (Number.isNaN(rideId)) return res.status(400).json({ error: 'ID de servicio invalido' });
+    const rideId = Number(req.params.id);
+    if (!Number.isInteger(rideId) || rideId < 1) return res.status(400).json({ error: 'ID de servicio invalido' });
 
     const ride = await rideService.acceptDriverOffer(rideId, req.user.id);
 
@@ -124,8 +138,8 @@ router.patch('/:id/client-accept', authRequired, requireRole('cliente'), async (
 
 router.patch('/:id/client-reject', authRequired, requireRole('cliente'), async (req, res, next) => {
   try {
-    const rideId = parseInt(req.params.id);
-    if (Number.isNaN(rideId)) return res.status(400).json({ error: 'ID de servicio invalido' });
+    const rideId = Number(req.params.id);
+    if (!Number.isInteger(rideId) || rideId < 1) return res.status(400).json({ error: 'ID de servicio invalido' });
 
     const ride = await rideService.rejectDriverOffer(rideId, req.user.id);
 
@@ -141,8 +155,8 @@ router.patch('/:id/client-reject', authRequired, requireRole('cliente'), async (
 
 router.patch('/:id/status', authRequired, async (req, res, next) => {
   try {
-    const rideId = parseInt(req.params.id);
-    if (Number.isNaN(rideId)) return res.status(400).json({ error: 'ID de servicio invalido' });
+    const rideId = Number(req.params.id);
+    if (!Number.isInteger(rideId) || rideId < 1) return res.status(400).json({ error: 'ID de servicio invalido' });
 
     const { status } = req.body;
     const allowed = ['en_camino', 'finalizado', 'cancelado'];
@@ -165,8 +179,8 @@ router.patch('/:id/status', authRequired, async (req, res, next) => {
 
 router.patch('/:id/rating', authRequired, requireRole('cliente'), async (req, res, next) => {
   try {
-    const rideId = parseInt(req.params.id);
-    if (Number.isNaN(rideId)) return res.status(400).json({ error: 'ID de servicio invalido' });
+    const rideId = Number(req.params.id);
+    if (!Number.isInteger(rideId) || rideId < 1) return res.status(400).json({ error: 'ID de servicio invalido' });
 
     const ride = await rideService.rateDriverService(
       rideId,

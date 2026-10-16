@@ -8,7 +8,7 @@ const authService = {
     const pool = await getPool();
     const result = await pool.request()
       .input('phone', sql.VarChar(30), phone)
-      .query('SELECT id, name, phone, password_hash, role FROM Users WHERE phone = @phone');
+      .query('SELECT id, name, phone, password_hash, role, session_version, phone_verified FROM Users WHERE phone = @phone');
     return result.recordset[0];
   },
 
@@ -42,7 +42,7 @@ const authService = {
           .input('vehicle_plate', sql.VarChar(20), vehicle_plate)
           .query(`
             INSERT INTO DriverProfiles (user_id, vehicle_plate, is_available, rating)
-            VALUES (@user_id, @vehicle_plate, 1, 5.0)
+            VALUES (@user_id, @vehicle_plate, 0, 5.0)
           `);
       }
 
@@ -74,7 +74,15 @@ const authService = {
     await pool.request()
       .input('id', sql.Int, userId)
       .input('password_hash', sql.NVarChar(255), passwordHash)
-      .query('UPDATE Users SET password_hash = @password_hash WHERE id = @id');
+      .query('UPDATE Users SET password_hash = @password_hash, session_version = session_version + 1, fcm_token = NULL WHERE id = @id');
+  },
+
+  async revokeSessions(userId) {
+    const pool = await getPool();
+    await pool.request().input('id', sql.Int, userId).query(
+      'UPDATE Users SET session_version = session_version + 1, fcm_token = NULL WHERE id = @id',
+    );
+    require('../socket').disconnectUser(userId);
   },
 
   async deleteOwnAccount(userId) {
@@ -83,6 +91,14 @@ const authService = {
 
     try {
       await transaction.begin();
+      const active = await transaction.request().input('id', sql.Int, userId).query(`
+        SELECT TOP 1 id FROM RideRequests WITH (UPDLOCK, HOLDLOCK)
+        WHERE (client_id = @id OR driver_id = @id) AND status IN ('solicitado','ofertado','aceptado','en_camino')
+      `);
+      if (active.recordset.length) {
+        throw Object.assign(new Error('Finaliza o cancela los viajes activos antes de eliminar la cuenta.'), { status: 409 });
+      }
+
 
       await transaction.request()
         .input('id', sql.Int, userId)
@@ -104,6 +120,7 @@ const authService = {
           DELETE FROM DriverProfiles
           WHERE user_id = @id;
 
+          DELETE FROM PushReceipts WHERE token IN (SELECT fcm_token FROM Users WHERE id = @id);
           DELETE FROM Users
           WHERE id = @id;
         `);

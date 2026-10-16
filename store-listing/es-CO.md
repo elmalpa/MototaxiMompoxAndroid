@@ -35,7 +35,7 @@ Mapas y navegación
 
 ## Correo de soporte
 
-[CORREO DE SOPORTE]
+chamoribon@gmail.com
 
 ## URL de privacidad
 

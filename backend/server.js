@@ -33,6 +33,7 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json({ limit: '1mb' }));
+app.use('/legal', express.static(require('node:path').join(__dirname, 'public', 'legal')));
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, app: 'Mototaxi Mompox API', timestamp: new Date().toISOString() });
@@ -41,7 +42,7 @@ app.get('/api/health', (req, res) => {
 app.get('/api/ready', async (req, res) => {
   try {
     const pool = await getPool();
-    await pool.request().query('SELECT 1 AS ready');
+    await pool.request().query('SELECT TOP 0 session_version, phone_verified FROM Users; SELECT TOP 0 approval_status FROM DriverProfiles; SELECT TOP 0 id FROM AuthChallenges; SELECT TOP 0 id FROM SupportReports; SELECT TOP 0 user_id FROM DriverLocations; SELECT TOP 0 id FROM PushReceipts;');
     res.json({ ok: true, database: 'ready' });
   } catch (error) {
     res.status(503).json({ ok: false, database: 'unavailable' });
@@ -49,6 +50,8 @@ app.get('/api/ready', async (req, res) => {
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/recovery', require('./src/routes/recovery'));
+app.use('/api/operations', require('./src/routes/operations'));
 app.use('/api/rides', rideRoutes);
 app.use('/api/drivers', driverRoutes);
 app.use('/api/admin', adminRoutes);
@@ -71,8 +74,21 @@ function startServer(port = PORT, host = HOST) {
 }
 
 if (require.main === module) {
+  if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32 || /generate_a_random|change_me/.test(process.env.JWT_SECRET))) {
+    throw new Error('Configura un JWT_SECRET aleatorio de al menos 32 caracteres antes de iniciar produccion.');
+  }
   const server = startServer();
+  let checking = false;
+  const receiptsTimer = setInterval(async () => {
+    if (checking) return;
+    checking = true;
+    try { await require('./src/notificationService').checkReceipts(); }
+    catch { console.error('[Push] No se pudieron verificar recibos. Revisar servicio y migracion SQL.'); }
+    finally { checking = false; }
+  }, 60000);
+  receiptsTimer.unref();
   const shutdown = signal => {
+    clearInterval(receiptsTimer);
     console.log(`[Server] ${signal} recibido; cerrando conexiones.`);
     server.close(async () => {
       await closePool();
